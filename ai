@@ -1,0 +1,177 @@
+#!/bin/bash
+# ai — ask Claude or ChatGPT from your terminal, on the plan you already pay for.
+#   ai "question"        ask your default AI (AI_PROVIDER, default claude)
+#   ai -c "question"     ask Claude   (Claude Code CLI, your Claude Pro/Max plan)
+#   ai -g "question"     ask ChatGPT  (Codex CLI, your ChatGPT Plus/Pro plan)
+#   ai                   type the question at a prompt
+#   git diff | ai        send piped text as the question
+# Settings (environment variables):
+#   AI_PROVIDER=claude|chatgpt     AI_BACKEND=auto|cli|api  (auto: plan first, else API key)
+#   AI_CLAUDE_MODEL=sonnet         (CLI alias, or full model id in API mode)
+#   AI_CLAUDE_EFFORT=low|medium|…  AI_CODEX_EFFORT=low      AI_OPENAI_MODEL=gpt-5
+#   AI_ANIMATE=0  no animation     NO_COLOR=1  no color
+set -o pipefail
+
+PROVIDER=${AI_PROVIDER:-claude}
+BACKEND=${AI_BACKEND:-auto}
+case ${1:-} in
+  -c) PROVIDER=claude;  shift ;;
+  -g) PROVIDER=chatgpt; shift ;;
+  -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+[[ $PROVIDER == openai ]] && PROVIDER=chatgpt
+
+# ---------- look and feel (stderr only; stdout stays clean for pipes) ----------
+TTY=0; [[ -t 2 ]] && TTY=1
+ANIM=$TTY; [[ ${AI_ANIMATE:-1} == 0 || ${TERM:-} == dumb ]] && ANIM=0
+B='' D='' R='' RED='' ACC=''
+if (( TTY )) && [[ -z ${NO_COLOR:-} ]]; then
+  B=$'\033[1m' D=$'\033[2m' R=$'\033[0m' RED=$'\033[31m'
+  case $PROVIDER in chatgpt) ACC=$'\033[38;5;42m' ;; *) ACC=$'\033[38;5;173m' ;; esac
+fi
+case $PROVIDER in claude) NAME=Claude ;; chatgpt) NAME=ChatGPT ;; *) NAME=$PROVIDER ;; esac
+
+SPIN=''
+spin_on() {  # animated "thinking" line with elapsed time
+  (( TTY )) || return 0
+  if (( ! ANIM )); then printf '%s%s is thinking…%s' "$D" "$NAME" "$R" >&2; return 0; fi
+  printf '\033[?25l' >&2
+  ( F=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0 start=$SECONDS
+    while kill -0 $$ 2>/dev/null; do   # stops by itself if ai is killed
+      t=$((SECONDS - start)) s=''; (( t >= 2 )) && s=" ${t}s"
+      printf '\r%s%s%s %s is thinking%s%s%s\033[K' "$ACC" "${F[i++ % 10]}" "$R" "$NAME" "$D" "$s" "$R" >&2
+      sleep 0.08
+    done ) &
+  SPIN=$!
+}
+spin_off() {
+  (( TTY )) || return 0
+  [[ -n $SPIN ]] && kill "$SPIN" 2>/dev/null; SPIN=''
+  printf '\r\033[K\033[?25h' >&2
+}
+fail() {  # fail "what went wrong" [errfile] [how to fix]
+  spin_off
+  printf '%s✗%s %s\n' "$RED" "$R" "$1" >&2
+  [[ -n ${3:-} ]] && printf '  %sFix:%s %s\n' "$B" "$R" "$3" >&2
+  [[ -s ${2:-} ]] && { printf '%s' "$D"; tail -n 5 "$2" | sed 's/^/  /'; printf '%s' "$R"; } >&2
+  exit 1
+}
+
+case $PROVIDER in claude|chatgpt) ;; *) fail "Unknown AI '$PROVIDER'." "" "use AI_PROVIDER=claude or chatgpt" ;; esac
+case $BACKEND in auto|cli|api) ;; *) fail "Unknown AI_BACKEND '$BACKEND'." "" "use auto, cli or api" ;; esac
+
+q="$*"
+if [[ -z ${q//[[:space:]]/} && ! -t 0 ]]; then q=$(cat); fi
+if [[ -z ${q//[[:space:]]/} ]]; then
+  read -r -p "${ACC}›${R} Ask ${NAME}: " q </dev/tty || exit 0
+fi
+[[ -z ${q//[[:space:]]/} ]] && exit 0
+
+SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put any shell commands on their own lines."
+
+find_bin() {
+  local c
+  for c in "$(command -v "$1" 2>/dev/null)" "$HOME/.local/bin/$1" "/opt/homebrew/bin/$1" "/usr/local/bin/$1"; do
+    [[ -n $c && -x $c ]] && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+get_key() {  # $1 env var, $2 keychain service
+  if [[ -n ${!1:-} ]]; then printf '%s' "${!1}"
+  else security find-generic-password -a "$USER" -s "$2" -w 2>/dev/null; fi
+}
+
+# Render markdown for the terminal: drop ``` fences, color code, bold **text**/headings,
+# and reveal the first lines one by one.
+render() {
+  if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
+  AI_DELAY=$(( ANIM ? 1 : 0 )) perl -pe 'BEGIN { $| = 1; $d = $ENV{AI_DELAY} ? 0.012 : 0 }
+    select(undef, undef, undef, $d) if $d && $. <= 40;
+    if (/^\s*```/) { $c = !$c; $_ = ""; next }
+    if ($c) { s/^(.*)$/  \e[36m$1\e[0m/; next }
+    s/^#+\s+(.*)$/\e[1m$1\e[0m/;
+    s/`([^`\n]+)`/\e[36m$1\e[0m/g;
+    s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;'
+}
+
+ERR=$(mktemp -t ai.XXXXXX)
+trap 'spin_off; rm -f "$ERR"' EXIT
+trap 'exit 130' INT TERM
+cd "$HOME" 2>/dev/null || true   # neutral dir: no project config/hooks get loaded
+
+# ---------- subscription CLIs ----------
+claude_cli() {
+  local bin=$1 out
+  out=$(printf '%s' "$q" | env -u ANTHROPIC_API_KEY "$bin" -p \
+          --tools "" --strict-mcp-config --no-session-persistence \
+          --model "${AI_CLAUDE_MODEL:-sonnet}" ${AI_CLAUDE_EFFORT:+--effort "$AI_CLAUDE_EFFORT"} \
+          --append-system-prompt "$SYS" 2>"$ERR") \
+    || { [[ -n $out ]] && printf '%s\n' "$out" >>"$ERR"
+         if grep -qiE 'authenticat|log ?in|oauth|expired' "$ERR"; then
+           fail "Claude Code isn't signed in." "$ERR" "$bin auth login"
+         else fail "Claude Code couldn't answer." "$ERR"; fi; }
+  [[ -n $out ]] || fail "Claude Code sent an empty reply." "$ERR"
+  spin_off
+  printf '%s\n' "$out"
+}
+codex_cli() {
+  local bin=$1 out
+  out=$(env -u OPENAI_API_KEY "$bin" exec --skip-git-repo-check --ephemeral \
+          -c "model_reasoning_effort=\"${AI_CODEX_EFFORT:-low}\"" \
+          -- "$SYS Do not run commands or read files unless the question needs it.
+
+Question: $q" </dev/null 2>"$ERR") \
+    || { [[ -n $out ]] && printf '%s\n' "$out" >>"$ERR"; fail "Codex couldn't answer (not signed in?)." "$ERR" "$bin login"; }
+  [[ -n $out ]] || fail "Codex sent an empty reply." "$ERR"
+  spin_off
+  printf '%s\n' "$out"
+}
+
+# ---------- API-key fallback ----------
+api_reply() {  # api_reply "$response_json" 'jq filter for the answer text'
+  local msg out
+  msg=$(printf '%s' "$1" | jq -r '.error.message? // empty' 2>/dev/null)
+  [[ -n $msg ]] && fail "The API said: $msg"
+  out=$(printf '%s' "$1" | jq -r "$2" 2>/dev/null)
+  [[ -n $out && $out != null ]] || fail "The API sent an empty or unreadable reply."
+  spin_off
+  printf '%s\n' "$out"
+}
+claude_api() {
+  local key=$1 body resp
+  command -v jq >/dev/null || fail "API mode needs jq." "" "brew install jq"
+  local model=${AI_CLAUDE_MODEL:-claude-sonnet-5-5}; [[ $model == sonnet ]] && model=claude-sonnet-5-5
+  # the prompt and the key never go on a command line, where any local user could read them with ps
+  body=$(Q=$q S=$SYS jq -n --arg m "$model" \
+    '{model:$m, max_tokens:2048, system:env.S, messages:[{role:"user", content:env.Q}]}')
+  resp=$(printf '%s' "$body" | curl -sS --connect-timeout 10 --max-time 300 https://api.anthropic.com/v1/messages \
+      -H @<(printf 'x-api-key: %s\n' "$key") -H "anthropic-version: 2023-06-01" \
+      -H "content-type: application/json" --data-binary @- 2>"$ERR") \
+    || fail "Couldn't reach Anthropic." "$ERR" "check your internet connection"
+  api_reply "$resp" '[.content[]? | select(.type=="text") | .text] | join("")'
+}
+openai_api() {
+  local key=$1 body resp
+  command -v jq >/dev/null || fail "API mode needs jq." "" "brew install jq"
+  body=$(Q=$q S=$SYS jq -n --arg m "${AI_OPENAI_MODEL:-gpt-5}" \
+    '{model:$m, messages:[{role:"system", content:env.S}, {role:"user", content:env.Q}]}')
+  resp=$(printf '%s' "$body" | curl -sS --connect-timeout 10 --max-time 300 https://api.openai.com/v1/chat/completions \
+      -H @<(printf 'Authorization: Bearer %s\n' "$key") -H "content-type: application/json" --data-binary @- 2>"$ERR") \
+    || fail "Couldn't reach OpenAI." "$ERR" "check your internet connection"
+  api_reply "$resp" '.choices[0].message.content'
+}
+
+# ---------- dispatch ----------
+spin_on
+{ case $PROVIDER in
+  claude)
+    if [[ $BACKEND != api ]] && bin=$(find_bin claude); then claude_cli "$bin"
+    elif [[ $BACKEND != cli ]] && key=$(get_key ANTHROPIC_API_KEY ai-zsh-anthropic) && [[ -n $key ]]; then claude_api "$key"
+    elif [[ $BACKEND == api ]]; then fail "No Anthropic API key found." "" "set ANTHROPIC_API_KEY, or rerun the installer to save one"
+    else fail "Claude Code isn't installed." "" "curl -fsSL https://claude.ai/install.sh | bash   (or rerun the installer)"; fi ;;
+  chatgpt)
+    if [[ $BACKEND != api ]] && bin=$(find_bin codex); then codex_cli "$bin"
+    elif [[ $BACKEND != cli ]] && key=$(get_key OPENAI_API_KEY ai-zsh-openai) && [[ -n $key ]]; then openai_api "$key"
+    elif [[ $BACKEND == api ]]; then fail "No OpenAI API key found." "" "set OPENAI_API_KEY, or rerun the installer to save one"
+    else fail "Codex isn't installed." "" "brew install --cask codex   (or rerun the installer)"; fi ;;
+esac; } | render
