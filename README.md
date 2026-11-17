@@ -44,7 +44,7 @@ cd ai-terminal && bash install.sh
 | `git diff \| ai` | Send piped text as the question |
 | `ai --help` | See every option |
 
-Quotes, `?` and `*` in your question are fine; the whole line is sent as typed. Code in answers is shown in color.
+Quotes, `?` and `*` in your question are fine; the whole line is sent as typed. Claude's answers stream in as they are written, and code is shown in color.
 
 **⌘I works in** iTerm2, Ghostty and kitty. **Terminal.app** can't remap ⌘I: turn on Settings → Profiles → Keyboard → "Use Option as Meta key", then press **⌥I**.
 
@@ -61,7 +61,7 @@ Set these in your shell startup file (for example `~/.zshrc`).
 | `AI_CODEX_EFFORT` | `low` | Codex `model_reasoning_effort`. The Codex model itself comes from your Codex config. |
 | `AI_OPENAI_MODEL` | `gpt-5` | OpenAI model in API mode. |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | unset | In API mode these are used first, then the Keychain items `ai-zsh-anthropic` / `ai-zsh-openai`. In CLI mode they are removed from the CLI's environment, so your plan is used even if a key is set. |
-| `AI_ANIMATE` | `1` | `0` turns off the spinner and the line-by-line reveal. |
+| `AI_ANIMATE` | `1` | `0` turns off the spinner. |
 | `NO_COLOR` | unset | Any value turns off color and formatting. |
 
 ## Uninstall
