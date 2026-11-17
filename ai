@@ -49,6 +49,9 @@ spin_off() {
   [[ -n $SPIN ]] && kill "$SPIN" 2>/dev/null; SPIN=''
   printf '\r\033[K\033[?25h' >&2
 }
+hdr() {  # hdr "model" — dim "Claude · sonnet" line where the spinner was (stderr)
+  (( ANIM )) && printf '%s%s · %s%s\n' "$D" "$NAME" "$1" "$R" >&2
+}
 fail() {  # fail "what went wrong" [errfile] [how to fix]
   spin_off
   printf '%s✗%s %s\n' "$RED" "$R" "$1" >&2
@@ -92,11 +95,13 @@ get_key() {  # $1 env var, $2 keychain service
 
 # Render markdown for the terminal: fences → colored code (syntax-highlighted by bat when
 # installed), headings/**bold**/*italic*, bullets, links, rules; prose wrapped to the terminal
-# width on word boundaries, code never. UTF-8 in and out (-CS), so widths are in characters.
+# width on word boundaries, code never. Ends with a dim elapsed-time footer on stderr.
+# UTF-8 in and out (-CS), so widths are in characters.
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -pe '
-    BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT} }
+  AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
+    BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT}; $t0 = time }
+    END { printf STDERR "\e[2m%.1fs\e[0m\n", time - $t0 if $ENV{AI_FOOT} && $. }
     sub cyan { $_[0] =~ s/^(.*)$/  \e[36m$1\e[0m/mgr }
     sub hl {  # bat colors the block, or plain cyan when it cannot (unknown language)
       my ($code, $lang) = @_;
@@ -134,15 +139,15 @@ trap 'exit 130' INT TERM
 cd "$HOME" 2>/dev/null || true   # neutral dir: no project config/hooks get loaded
 
 # ---------- subscription CLIs ----------
-# Print the text of a stream-json answer as it arrives; the spinner stops at the first word.
-# Exits 3 when nothing was printed, with any error text appended to the $ERR file.
+# stream_text "header": print the text of a stream-json answer as it arrives; the spinner
+# stops at the first word. Exits 3 when nothing was printed, with any error text appended to $ERR.
 stream_text() {
-  SPIN=$SPIN AI_TTY=$TTY AI_ERR=$ERR perl -MJSON::PP -ne '
+  SPIN=$SPIN AI_TTY=$TTY AI_ERR=$ERR AI_HEAD=$1 perl -MJSON::PP -ne '
     BEGIN { $| = 1; binmode STDOUT, ":utf8" }
     my $j = eval { decode_json($_) } or next;
     if ($j->{type} eq "stream_event") {
       my $d = $j->{event}{delta} or next; next unless ($d->{type} // "") eq "text_delta";
-      if (!$n++ && $ENV{AI_TTY}) { kill TERM => $ENV{SPIN} if $ENV{SPIN}; print STDERR "\r\e[K\e[?25h" }
+      if (!$n++ && $ENV{AI_TTY}) { kill TERM => $ENV{SPIN} if $ENV{SPIN}; print STDERR "\r\e[K\e[?25h", $ENV{AI_HEAD} ? "$ENV{AI_HEAD}\n" : "" }
       print $d->{text};
     } elsif ($j->{type} eq "result" && $j->{is_error}) {
       open my $e, ">>", $ENV{AI_ERR}; print $e "$j->{result}\n";
@@ -150,11 +155,11 @@ stream_text() {
     END { print "\n" if $n; exit($n ? 0 : 3) }'
 }
 claude_cli() {
-  local bin=$1 rc
+  local bin=$1 rc model=${AI_CLAUDE_MODEL:-sonnet}
   printf '%s' "$q" | env -u ANTHROPIC_API_KEY "$bin" -p --verbose --output-format stream-json --include-partial-messages \
       --tools "" --strict-mcp-config --no-session-persistence \
-      --model "${AI_CLAUDE_MODEL:-sonnet}" ${AI_CLAUDE_EFFORT:+--effort "$AI_CLAUDE_EFFORT"} \
-      --append-system-prompt "$SYS" 2>"$ERR" | stream_text
+      --model "$model" ${AI_CLAUDE_EFFORT:+--effort "$AI_CLAUDE_EFFORT"} \
+      --append-system-prompt "$SYS" 2>"$ERR" | stream_text "$(hdr "$model" 2>&1)"
   rc=("${PIPESTATUS[@]}")
   (( rc[2] == 3 )) || return 0   # the answer was printed
   if grep -qiE 'authenticat|log ?in|oauth|expired' "$ERR"; then
@@ -174,18 +179,18 @@ Question: $q" </dev/null 2>"$ERR") \
          [[ -z ${2:-} && ! -f $HOME/.codex/auth.json ]] && offer_login Codex env -u OPENAI_API_KEY "$bin" login && { codex_cli "$bin" retried; return; }
          fail "Codex couldn't answer (not signed in?)." "$ERR" "$bin login"; }
   [[ -n $out ]] || fail "Codex sent an empty reply." "$ERR"
-  spin_off
+  spin_off; hdr codex
   printf '%s\n' "$out"
 }
 
 # ---------- API-key fallback ----------
-api_reply() {  # api_reply "$response_json" 'jq filter for the answer text'
+api_reply() {  # api_reply "$response_json" 'jq filter for the answer text' "model"
   local msg out
   msg=$(printf '%s' "$1" | jq -r '.error.message? // empty' 2>/dev/null)
   [[ -n $msg ]] && fail "The API said: $msg"
   out=$(printf '%s' "$1" | jq -r "$2" 2>/dev/null)
   [[ -n $out && $out != null ]] || fail "The API sent an empty or unreadable reply."
-  spin_off
+  spin_off; hdr "$3"
   printf '%s\n' "$out"
 }
 claude_api() {
@@ -199,17 +204,18 @@ claude_api() {
       -H @<(printf 'x-api-key: %s\n' "$key") -H "anthropic-version: 2023-06-01" \
       -H "content-type: application/json" --data-binary @- 2>"$ERR") \
     || fail "Couldn't reach Anthropic." "$ERR" "check your internet connection"
-  api_reply "$resp" '[.content[]? | select(.type=="text") | .text] | join("")'
+  api_reply "$resp" '[.content[]? | select(.type=="text") | .text] | join("")' "$model"
 }
 openai_api() {
   local key=$1 body resp
   command -v jq >/dev/null || fail "API mode needs jq." "" "brew install jq"
-  body=$(Q=$q S=$SYS jq -n --arg m "${AI_OPENAI_MODEL:-gpt-5}" \
+  local model=${AI_OPENAI_MODEL:-gpt-5}
+  body=$(Q=$q S=$SYS jq -n --arg m "$model" \
     '{model:$m, messages:[{role:"system", content:env.S}, {role:"user", content:env.Q}]}')
   resp=$(printf '%s' "$body" | curl -sS --connect-timeout 10 --max-time 300 https://api.openai.com/v1/chat/completions \
       -H @<(printf 'Authorization: Bearer %s\n' "$key") -H "content-type: application/json" --data-binary @- 2>"$ERR") \
     || fail "Couldn't reach OpenAI." "$ERR" "check your internet connection"
-  api_reply "$resp" '.choices[0].message.content'
+  api_reply "$resp" '.choices[0].message.content' "$model"
 }
 
 # ---------- dispatch ----------
