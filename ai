@@ -86,7 +86,7 @@ fi
 [[ -z ${q//[[:space:]]/} ]] && exit 0
 (( ${#q} > 100000 )) && fail "That's too much text (${#q} characters)." "" "pipe less, for example git diff --stat"   # Codex and jq take it as an argument: ARG_MAX
 
-SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put shell commands in a fenced \`\`\`bash block."
+SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put shell commands in a fenced \`\`\`bash block. You have no tools here: you cannot run commands, browse or look anything up, so never write tool calls or XML tags. If the answer needs live data (weather, news, prices), say so in one line and give a command or site that shows it."
 
 find_bin() {
   local c
@@ -107,7 +107,7 @@ get_key() {  # $1 env var, $2 keychain service
 # and, after 10 s, a terminal notification (OSC 9).
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  AI_CODE_C=$CODE_C AI_CODE=$CODE AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -MIPC::Open2 -MTime::HiRes=time -MEncode -e '
+  AI_CODE_C=$CODE_C AI_CODE=$CODE AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(stty size 2>/dev/null </dev/tty | cut -d' ' -f2) perl -MIPC::Open2 -MTime::HiRes=time -MEncode -e '
     $| = 1; binmode STDOUT, ":utf8";
     my $w = $ENV{COLUMNS} || 80; my $bat = $ENV{AI_BAT}; my $cc = $ENV{AI_CODE_C} || 36; my $t0 = time;
     my ($c, $lang, $code, $saved, $lines);
