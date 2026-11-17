@@ -1,10 +1,11 @@
 # ai-terminal
 
-Three shell files (`ai`, `ai-keys.sh`, `install.sh`) with no build step and no tests. [README.md](README.md) covers what it does and everything the installer changes.
+Three shell files (`ai`, `ai-keys.sh`, `install.sh`) with no build step; `test.sh` is the only test. [README.md](README.md) covers what it does and everything the installer changes.
 
 ## Checking a change
 
-- Syntax check, the only automated check: `for f in ai install.sh ai-keys.sh; do bash -n "$f"; done; zsh -n ai-keys.sh`
+- Syntax check: `for f in ai install.sh ai-keys.sh; do bash -n "$f"; done; zsh -n ai-keys.sh`
+- `bash test.sh` runs that syntax check, then `ai` against a fake `claude` on PATH: raw markdown when piped, rendered under a pseudo-terminal (`script -q /dev/null`), and the sign-in failure message with exit 1. No sign-in or network needed; it prints `ok`.
 - `bash ai "question"` runs the repo copy, and sends a real question on the signed-in plan or API key. Files are not executable in git; the installer sets that on its copy.
 - `install.sh` copies files rather than linking them, so the installed `ai` stays old until it is rerun. It needs a terminal to answer its prompts, and it edits shell startup files, iTerm2 preferences and the Keychain, so don't run it to test unless asked.
 - The README's one-line install is `curl … install.sh | bash`. Then `install.sh` downloads `ai` and `ai-keys.sh` from `master` on GitHub, so changes reach new users only once pushed. Its body stays inside `main()` so bash reads the whole script before running it, and anything it runs that could read stdin gets `</dev/null` or `</dev/tty`.
