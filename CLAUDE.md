@@ -18,7 +18,7 @@ Three shell files (`ai`, `ai-keys.sh`, `install.sh`) with no build step; `test.s
 - `ai --help` prints lines 2-12 of `ai`, so the usage comment has to stay on those lines.
 - Don't rename the Keychain services (`ai-zsh-anthropic`, `ai-zsh-openai`), the `# >>> ai.zsh >>>` markers or the iTerm2 key `0x69-0x100000`. Existing installs depend on them, and rerunning or uninstalling only finds these names.
 - API keys never go on a command line. API mode passes the key through `-H @<(...)` and the prompt through the environment and stdin; the installer feeds Keychain writes to `security -i`. Codex is the exception for the prompt only: `codex exec` takes it as an argument.
-- Keep the isolation: run from `$HOME` and, in CLI mode, remove the API key variable so the plan is used and run Claude Code with no tools and no MCP servers. The README's security section promises this.
+- Keep the isolation: run from `$HOME` and, in CLI mode, remove the API key variable so the plan is used and run Claude Code with only the WebSearch and WebFetch tools and no MCP servers. The README's security section promises this.
 - Recheck against the installed `claude` and `codex` when changing them: the flags in `claude_cli` and `codex_cli`, and the sign-in checks in `install.sh` (`auth status` showing `"authMethod": "claude.ai"`, and `~/.codex/auth.json`).
 - The default API model `claude-sonnet-5-5` appears in both `ai` and the README.
 

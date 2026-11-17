@@ -86,7 +86,7 @@ fi
 [[ -z ${q//[[:space:]]/} ]] && exit 0
 (( ${#q} > 100000 )) && fail "That's too much text (${#q} characters)." "" "pipe less, for example git diff --stat"   # Codex and jq take it as an argument: ARG_MAX
 
-SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put shell commands in a fenced \`\`\`bash block. You have no tools here: you cannot run commands, browse or look anything up, so never write tool calls or XML tags. If the answer needs live data (weather, news, prices), say so in one line and give a command or site that shows it."
+SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put shell commands in a fenced \`\`\`bash block. Your only tools are web search and web fetch: use them when the answer needs live data (weather, news, prices, versions) and report what you found, not how to look it up. You cannot run commands or read files."
 
 find_bin() {
   local c
@@ -201,7 +201,7 @@ claude_cli() {
   local bin=$1 rc model=${AI_CLAUDE_MODEL:-sonnet} sess=(--no-session-persistence)
   if [[ -n $SID ]]; then if (( TURN )) || [[ -n ${2:-} ]]; then sess=(--resume "$SID"); else sess=(--session-id "$SID"); fi; fi
   printf '%s' "$q" | env -u ANTHROPIC_API_KEY "$bin" -p --verbose --output-format stream-json --include-partial-messages \
-      --tools "" --strict-mcp-config --setting-sources "" "${sess[@]}" \
+      --tools "WebSearch,WebFetch" --allowedTools "WebSearch,WebFetch" --strict-mcp-config --setting-sources "" "${sess[@]}" \
       --model "$model" ${AI_CLAUDE_EFFORT:+--effort "$AI_CLAUDE_EFFORT"} \
       --append-system-prompt "$SYS" 2>"$ERR" | stream_text "$(hdr "$model" 2>&1)"
   rc=("${PIPESTATUS[@]}")
