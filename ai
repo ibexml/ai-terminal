@@ -3,13 +3,13 @@
 #   ai "question"        ask your default AI (AI_PROVIDER, default claude)
 #   ai -c "question"     ask Claude   (Claude Code CLI, your Claude Pro/Max plan)
 #   ai -g "question"     ask ChatGPT  (Codex CLI, your ChatGPT Plus/Pro plan)
-#   ai                   type the question at a prompt
-#   git diff | ai        send piped text as the question
+#   ai                   type the question at a prompt;  git diff | ai  sends piped text
 # Settings (environment variables):
 #   AI_PROVIDER=claude|chatgpt     AI_BACKEND=auto|cli|api  (auto: plan first, else API key)
 #   AI_CLAUDE_MODEL=sonnet         (CLI alias, or full model id in API mode)
 #   AI_CLAUDE_EFFORT=low|medium|…  AI_CODEX_EFFORT=low      AI_OPENAI_MODEL=gpt-5
-#   AI_ANIMATE=0  no animation     NO_COLOR=1  no color
+#   AI_FOLLOWUP=1 ask follow-ups (Claude)    AI_COPY=1 offer to copy the first code block
+#   AI_THEME=light|dark   AI_ANIMATE=0 no animation   NO_COLOR=1 no color
 set -o pipefail
 
 PROVIDER=${AI_PROVIDER:-claude}
@@ -30,6 +30,9 @@ if (( TTY )) && [[ -z ${NO_COLOR:-} ]]; then
   case $PROVIDER in chatgpt) ACC=$'\033[38;5;42m' ;; *) ACC=$'\033[38;5;173m' ;; esac
 fi
 case $PROVIDER in claude) NAME=Claude ;; chatgpt) NAME=ChatGPT ;; *) NAME=$PROVIDER ;; esac
+THEME=${AI_THEME:-}   # else from COLORFGBG ("fg;bg", set by iTerm2 and others): bg 7 or 9-15 is light
+[[ -z $THEME ]] && case ${COLORFGBG##*;} in 7|9|1[0-5]) THEME=light ;; *) THEME=dark ;; esac
+CODE_C=36; [[ $THEME == light ]] && CODE_C=34   # code: cyan on dark, blue on light
 CLR=$'\r\033[K\033[?25h'; (( ANIM )) && CLR+=$'\033]0;\007'   # clear the spinner line, show the cursor, reset the tab title
 
 SPIN=''
@@ -100,10 +103,10 @@ get_key() {  # $1 env var, $2 keychain service
 # footer on stderr and, after 10 s, a terminal notification (OSC 9). UTF-8 in and out (-CS).
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  AI_CODE=$CODE AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
-    BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT}; $t0 = time }
+  AI_CODE_C=$CODE_C AI_CODE=$CODE AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
+    BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT}; $cc = $ENV{AI_CODE_C} || 36; $t0 = time }
     END { if ($ENV{AI_FOOT} && $.) { my $t = time - $t0; printf STDERR "\e[2m%.1fs\e[0m\n", $t; print STDERR "\e]9;$ENV{AI_NAME} answered\a" if $t > 10 } }
-    sub cyan { $_[0] =~ s/^(.*)$/  \e[36m$1\e[0m/mgr }
+    sub cyan { $_[0] =~ s/^(.*)$/  \e[${cc}m$1\e[0m/mgr }
     sub hl {  # bat colors the block, or plain cyan when it cannot (unknown language)
       my ($code, $lang) = @_;
       my $pid = open2(my $out, my $in, "sh", "-c", q{exec "$0" "$@" 2>/dev/null}, $bat, "-l", $lang, "--style=plain", "--color=always", "--paging=never");
@@ -134,7 +137,7 @@ render() {
     s/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/"\e[2m" . ("\x{2500}" x ($w - 2)) . "\e[0m\n"/e;
     s/\[([^]\n]+)\]\((https?:[^)\s]+)\)/$1 \e[2m$2\e[0m/g;
     s{(https?://[^\s)>\]\e]*[^\s)>\]\e.,;:!?])}{\e]8;;$1\e\\$1\e]8;;\e\\}g;
-    s/`([^`\n]+)`/\e[36m$1\e[0m/g;
+    s/`([^`\n]+)`/\e[${cc}m$1\e[0m/g;
     s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;
     s/(?<![\w*])[*_](?=\S)([^*_\e\n]+?)(?<=\S)[*_](?![\w*])/\e[3m$1\e[0m/g;
     if (/\S/ && !/\x{2500}/) { chomp; my ($ind) = /^(\s*(?:\x{2022} |\d+[.)] )?)/; $_ = wrap($_, " " x length $ind) . "\n" }'
