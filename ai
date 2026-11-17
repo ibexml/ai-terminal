@@ -40,7 +40,7 @@ spin_on() {  # animated "thinking" line with elapsed time
   (( TTY )) || return 0
   if (( ! ANIM )); then printf '%s%s is thinking…%s' "$D" "$NAME" "$R" >&2; return 0; fi
   printf '\033[?25l\033]0;ai: %s is thinking…\007' "$NAME" >&2
-  ( F=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0 start=$SECONDS
+  ( trap 'exit 0' TERM; F=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0 start=$SECONDS   # exit quietly when stopped, no "Terminated" line
     while kill -0 $$ 2>/dev/null; do   # stops by itself if ai is killed
       t=$((SECONDS - start)) s=''; (( t >= 2 )) && s=" ${t}s"
       printf '\r%s%s%s %s is thinking%s%s%s\033[K' "$ACC" "${F[i++ % 10]}" "$R" "$NAME" "$D" "$s" "$R" >&2
@@ -50,7 +50,7 @@ spin_on() {  # animated "thinking" line with elapsed time
 }
 spin_off() {
   (( TTY )) || return 0
-  [[ -n $SPIN ]] && kill "$SPIN" 2>/dev/null; SPIN=''
+  [[ -n $SPIN ]] && { kill "$SPIN" 2>/dev/null; wait "$SPIN" 2>/dev/null; }; SPIN=''   # wait: no frame drawn over what follows
   printf '%s' "$CLR" >&2
 }
 hdr() {  # hdr "model" — dim "Claude · sonnet" line where the spinner was (stderr)
@@ -69,7 +69,9 @@ offer_login() {  # offer_login "Claude Code" cmd...  — ask on the tty, run the
   spin_off
   read -r -p "${RED}✗${R} $1 isn't signed in. Sign in now? ${D}[Y/n]${R} " a </dev/tty || return 1
   case $a in [nN]*) return 1 ;; esac
-  "${@:2}" </dev/tty >/dev/tty 2>&1 || true   # its URL and prompts go to the tty, not into the render pipe
+  # Under script(1) the login gets a real terminal: Claude Code (Bun) crashes with EINVAL kqueue on a
+  # freshly opened /dev/tty, and ai's own stdin may be a pipe. Its output goes to stderr, not the render pipe.
+  script -q /dev/null "${@:2}" </dev/tty >&2 || true
   spin_on
 }
 

@@ -143,7 +143,7 @@ if [[ -n ${CLAUDE:-} ]]; then
   if env -u ANTHROPIC_API_KEY "$CLAUDE" auth status 2>/dev/null | grep -q '"authMethod": *"claude.ai"'; then
     ok "Signed in with your Claude plan"
   elif ask_yn "Sign in to Claude Code with your Claude plan now? (opens your browser)" y; then
-    env -u ANTHROPIC_API_KEY "$CLAUDE" auth login </dev/tty || true
+    script -q /dev/null env -u ANTHROPIC_API_KEY "$CLAUDE" auth login </dev/tty || true   # a real tty: Claude Code (Bun) crashes on a freshly opened /dev/tty
     if env -u ANTHROPIC_API_KEY "$CLAUDE" auth status 2>/dev/null | grep -q '"authMethod": *"claude.ai"'; then
       ok "Signed in"
     else warn "Not signed in yet — run: claude auth login"; fi
