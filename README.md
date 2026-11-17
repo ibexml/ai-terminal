@@ -127,7 +127,7 @@ Only if you say yes at the prompts:
 ## Security and privacy
 
 - Everything you send with ⌘I or `ai`, meaning the whole prompt line or stdin, goes to the AI you chose: Anthropic (Claude Code or api.anthropic.com) or OpenAI (Codex or api.openai.com). Don't press ⌘I on a line that contains passwords or secrets, and be careful piping files into `ai`.
-- `ai` runs from your home directory so no project config or hooks get loaded. Claude Code runs with all tools turned off and no MCP servers. Codex runs `codex exec` with its default sandbox and is told not to run commands or read files unless the question needs them. It can still do so, within Codex's sandbox.
+- `ai` runs from your home directory and tells Claude Code to load no settings at all (`--setting-sources ""`), so none of your project or user config, hooks or plugins take part. Claude Code runs with all tools turned off and no MCP servers. Codex runs `codex exec` with its default sandbox and is told not to run commands or read files unless the question needs them. It can still do so, within Codex's sandbox.
 - API keys are stored in your macOS login Keychain, not in files, and never passed on a command line.
 - The installer can run third-party install scripts (`claude.ai/install.sh`, Homebrew, npm), but only after asking you.
 

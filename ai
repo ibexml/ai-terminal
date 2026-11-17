@@ -84,6 +84,7 @@ if [[ -z ${q//[[:space:]]/} ]]; then
   read -r -p "${ACC}›${R} Ask ${NAME}: " q </dev/tty || exit 0
 fi
 [[ -z ${q//[[:space:]]/} ]] && exit 0
+(( ${#q} > 100000 )) && fail "That's too much text (${#q} characters)." "" "pipe less, for example git diff --stat"   # Codex and jq take it as an argument: ARG_MAX
 
 SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put shell commands in a fenced \`\`\`bash block."
 
@@ -118,7 +119,9 @@ render() {
       print $in $code; close $in; local $/; my $h = <$out>; waitpid $pid, 0;   # shortcut: block written before reading, fine below the pipe buffer (64 KB)
       ($? == 0 && length $h) ? $h =~ s/^/  /mgr : cyan($code);
     }
-    sub vis { my $s = shift; $s =~ s/\e\[[\d;]*m|\e\]8;;[^\e]*\e\\//g; length $s }   # visible width, escapes dropped
+    sub vis {  # visible columns: escapes dropped, East Asian wide characters and emoji count two
+      my $s = shift; $s =~ s/\e\[[\d;]*m|\e\]8;;[^\e]*\e\\//g; my $wide = () = $s =~ /[\p{Ea=W}\p{Ea=F}]/g; length($s) + $wide;
+    }
     sub wrap {  # wrap at $w on spaces; continuation lines get the bullet/number indent
       my ($s, $ind) = @_; my (@o, @cur);
       for my $wd (split / /, $s, -1) {
@@ -150,13 +153,14 @@ render() {
       if (/\S/ && !/\x{2500}/ && !/\e\[${cc}m/) { chomp; my ($ind) = /^(\s*(?:\x{2022} |\d+[.)] )?)/; $_ = wrap($_, " " x length $ind) . "\n" }
       $_;
     }
-    my ($buf, $line, $shown) = ("", "", 0);   # $shown: characters of the current line already on screen, raw
-    sub redraw { return unless $shown; my $rows = int(($shown - 1) / $w); print "\e[${rows}A" if $rows; print "\r\e[J"; $shown = 0 }
+    my ($buf, $line, $shown, $cols) = ("", "", 0, 0);   # $shown: characters of the current line already on screen, raw; $cols: their width
+    sub redraw { return unless $cols; my $rows = int(($cols - 1) / $w); print "\e[${rows}A" if $rows; print "\r\e[J"; $shown = $cols = 0 }
     while (sysread STDIN, my $chunk, 4096) {
       $buf .= $chunk;
       $line .= decode("UTF-8", $buf, Encode::FB_QUIET);   # an incomplete trailing character waits in $buf
+      if (length $buf >= 4) { $line .= decode("UTF-8", $buf); $buf = "" }   # 4+ bytes is not a partial character: bad bytes become U+FFFD
       while ($line =~ s/^(.*\n)//) { redraw(); print line($1) }
-      if (length $line > $shown && !($c && $bat && $lang) && $line !~ /^\s*`/) { print substr($line, $shown); $shown = length $line }
+      if (length $line > $shown && !($c && $bat && $lang) && $line !~ /^\s*`/) { print substr($line, $shown); $shown = length $line; $cols = vis($line) }
     }
     if (length $line) { redraw(); print line("$line\n") }
     if ($ENV{AI_FOOT} && $lines) { my $t = time - $t0; printf STDERR "\e[2m%.1fs\e[0m\n", $t; print STDERR "\e]9;$ENV{AI_NAME} answered\a" if $t > 10 }'
@@ -169,7 +173,7 @@ SID='' TURN=0
 if [[ ${AI_FOLLOWUP:-0} == 1 && $PROVIDER == claude && $BACKEND != api ]] && (( TTY )) && find_bin claude >/dev/null; then
   SID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 fi
-cleanup() { spin_off; rm -f "$ERR" "$CODE"; [[ -n $SID ]] && rm -f "$HOME"/.claude/projects/*/"$SID".jsonl; }
+cleanup() { spin_off; rm -f "$ERR" "$ERR.late" "$CODE"; [[ -n $SID ]] && rm -f "$HOME"/.claude/projects/*/"$SID".jsonl; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 cd "$HOME" 2>/dev/null || true   # neutral dir: no project config/hooks get loaded
@@ -184,25 +188,26 @@ stream_text() {
     my $j = eval { decode_json($_) } or next;
     if ($j->{type} eq "stream_event") {
       my $d = $j->{event}{delta} or next; next unless ($d->{type} // "") eq "text_delta";
-      start(); print $d->{text};
+      start(); print $d->{text}; $last = substr($d->{text}, -1) if length $d->{text};
     } elsif ($j->{type} eq "result") {
       if ($j->{is_error}) { open my $e, ">>", $ENV{AI_ERR}; print $e "$j->{result}\n" }
-      elsif (!$n && length($j->{result} // "")) { start(); print $j->{result} }   # no deltas came: print the whole answer
+      elsif (!$n && length($j->{result} // "")) { start(); print $j->{result}; $last = substr($j->{result}, -1) }   # no deltas came: print the whole answer
     }
-    END { print "\n" if $n; exit($n ? 0 : 3) }'
+    END { print "\n" if $n && $last ne "\n"; exit($n ? 0 : 3) }'
 }
 claude_cli() {
   local bin=$1 rc model=${AI_CLAUDE_MODEL:-sonnet} sess=(--no-session-persistence)
   if [[ -n $SID ]]; then if (( TURN )) || [[ -n ${2:-} ]]; then sess=(--resume "$SID"); else sess=(--session-id "$SID"); fi; fi
   printf '%s' "$q" | env -u ANTHROPIC_API_KEY "$bin" -p --verbose --output-format stream-json --include-partial-messages \
-      --tools "" --strict-mcp-config "${sess[@]}" \
+      --tools "" --strict-mcp-config --setting-sources "" "${sess[@]}" \
       --model "$model" ${AI_CLAUDE_EFFORT:+--effort "$AI_CLAUDE_EFFORT"} \
       --append-system-prompt "$SYS" 2>"$ERR" | stream_text "$(hdr "$model" 2>&1)"
   rc=("${PIPESTATUS[@]}")
-  if (( rc[2] != 3 )); then   # the answer was printed; mention it if Claude Code still died
-    (( rc[1] )) && [[ -s $ERR ]] && { printf '%s' "$D"; tail -n 3 "$ERR" | sed 's/^/  /'; printf '%s' "$R"; } >&2
+  if (( rc[2] == 0 )); then   # the answer was printed; if Claude Code still died, say so after the answer
+    (( rc[1] )) && [[ -s $ERR ]] && cp "$ERR" "$ERR.late"
     return 0
   fi
+  (( rc[2] == 3 )) || fail "Claude Code's reply couldn't be shown." "$ERR"
   if grep -qiE 'authenticat|log ?in|oauth|expired' "$ERR"; then
     [[ -z ${2:-} ]] && offer_login "Claude Code" env -u ANTHROPIC_API_KEY "$bin" auth login && { claude_cli "$bin" retried; return; }
     fail "Claude Code isn't signed in." "$ERR" "$bin auth login"
@@ -233,6 +238,9 @@ api_reply() {  # api_reply "$response_json" 'jq filter for the answer text' "mod
   [[ -n $out && $out != null ]] || fail "The API sent an empty or unreadable reply."
   spin_off; hdr "$3"
   printf '%s\n' "$out"
+  case $(printf '%s' "$1" | jq -r '.stop_reason? // .choices[0].finish_reason? // empty' 2>/dev/null) in
+    max_tokens|length) printf '\n*(answer cut off at the length limit)*\n' ;;
+  esac
 }
 claude_api() {
   local key=$1 body resp
@@ -240,7 +248,7 @@ claude_api() {
   local model=${AI_CLAUDE_MODEL:-claude-sonnet-5-5}; [[ $model == sonnet ]] && model=claude-sonnet-5-5
   # the prompt and the key never go on a command line, where any local user could read them with ps
   body=$(Q=$q S=$SYS jq -n --arg m "$model" \
-    '{model:$m, max_tokens:2048, system:env.S, messages:[{role:"user", content:env.Q}]}')
+    '{model:$m, max_tokens:8192, system:env.S, messages:[{role:"user", content:env.Q}]}')
   resp=$(printf '%s' "$body" | curl -sS --connect-timeout 10 --max-time 300 https://api.anthropic.com/v1/messages \
       -H @<(printf 'x-api-key: %s\n' "$key") -H "anthropic-version: 2023-06-01" \
       -H "content-type: application/json" --data-binary @- 2>"$ERR") \
@@ -282,6 +290,7 @@ spin_on
     elif [[ $BACKEND == api ]]; then fail "No OpenAI API key found." "" "set OPENAI_API_KEY, or rerun the installer to save one"
     else fail "Codex isn't installed." "" "brew install --cask codex   (or rerun the installer)"; fi ;;
 esac; } | render || exit $?
+[[ -s $ERR.late ]] && { printf '%s' "$D"; tail -n 3 "$ERR.late" | sed 's/^/  /'; printf '%s' "$R"; rm -f "$ERR.late"; } >&2
 [[ -n $CODE ]] && offer_copy
 [[ -n $SID ]] || break
 read -r -p "${ACC}›${R} Follow-up ${D}(Enter to quit)${R}: " q </dev/tty || break
