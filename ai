@@ -119,8 +119,9 @@ render() {
       print $in $code; close $in; local $/; my $h = <$out>; waitpid $pid, 0;   # shortcut: block written before reading, fine below the pipe buffer (64 KB)
       ($? == 0 && length $h) ? $h =~ s/^/  /mgr : cyan($code);
     }
-    sub vis {  # visible columns: escapes dropped, East Asian wide characters and emoji count two
-      my $s = shift; $s =~ s/\e\[[\d;]*m|\e\]8;;[^\e]*\e\\//g; my $wide = () = $s =~ /[\p{Ea=W}\p{Ea=F}]/g; length($s) + $wide;
+    sub vis {  # visible columns: escapes dropped, one per grapheme (joined emoji, accents), two for wide ones
+      my $s = shift; $s =~ s/\e\[[\d;]*m|\e\]8;;[^\e]*\e\\//g; my $n = 0;
+      for ($s =~ /\X/g) { $n += /^[\p{Ea=W}\p{Ea=F}]/ ? 2 : 1 } $n;
     }
     sub wrap {  # wrap at $w on spaces; continuation lines get the bullet/number indent
       my ($s, $ind) = @_; my (@o, @cur);
@@ -236,12 +237,11 @@ api_reply() {  # api_reply "$response_json" 'jq filter for the answer text' "mod
   msg=$(printf '%s' "$1" | jq -r '.error.message? // empty' 2>/dev/null)
   [[ -n $msg ]] && fail "The API said: $msg"
   out=$(printf '%s' "$1" | jq -r "$2" 2>/dev/null)
-  [[ -n $out && $out != null ]] || fail "The API sent an empty or unreadable reply."
+  local cut=0; case $(printf '%s' "$1" | jq -r '.stop_reason? // .choices[0].finish_reason? // empty' 2>/dev/null) in max_tokens|length) cut=1 ;; esac
+  [[ -n $out && $out != null ]] || { (( cut )) && fail "The API hit its length limit before writing any text."; fail "The API sent an empty or unreadable reply."; }
   spin_off; hdr "$3"
   printf '%s\n' "$out"
-  case $(printf '%s' "$1" | jq -r '.stop_reason? // .choices[0].finish_reason? // empty' 2>/dev/null) in
-    max_tokens|length) printf '\n*(answer cut off at the length limit)*\n' ;;
-  esac
+  (( cut )) && printf '\n*(answer cut off at the length limit)*\n'
 }
 claude_api() {
   local key=$1 body resp
