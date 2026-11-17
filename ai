@@ -162,6 +162,7 @@ render() {
       while ($line =~ s/^(.*\n)//) { redraw(); print line($1) }
       if (length $line > $shown && !($c && $bat && $lang) && $line !~ /^\s*`/) { print substr($line, $shown); $shown = length $line; $cols = vis($line) }
     }
+    $line .= decode("UTF-8", $buf) if length $buf;   # a truncated character at the very end
     if (length $line) { redraw(); print line("$line\n") }
     if ($ENV{AI_FOOT} && $lines) { my $t = time - $t0; printf STDERR "\e[2m%.1fs\e[0m\n", $t; print STDERR "\e]9;$ENV{AI_NAME} answered\a" if $t > 10 }'
 }
@@ -207,7 +208,7 @@ claude_cli() {
     (( rc[1] )) && [[ -s $ERR ]] && cp "$ERR" "$ERR.late"
     return 0
   fi
-  (( rc[2] == 3 )) || fail "Claude Code's reply couldn't be shown." "$ERR"
+  (( rc[2] == 3 )) || { (( rc[2] > 128 )) && return 0; fail "Claude Code's reply couldn't be shown." "$ERR"; }   # >128: killed (Ctrl-C, | head), not broken
   if grep -qiE 'authenticat|log ?in|oauth|expired' "$ERR"; then
     [[ -z ${2:-} ]] && offer_login "Claude Code" env -u ANTHROPIC_API_KEY "$bin" auth login && { claude_cli "$bin" retried; return; }
     fail "Claude Code isn't signed in." "$ERR" "$bin auth login"
