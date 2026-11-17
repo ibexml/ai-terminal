@@ -142,7 +142,13 @@ render() {
 
 ERR=$(mktemp -t ai.XXXXXX)
 CODE=''; [[ ${AI_COPY:-0} == 1 ]] && (( TTY )) && CODE=$(mktemp -t ai.XXXXXX)   # the answer's first code block
-trap 'spin_off; rm -f "$ERR" "$CODE"' EXIT
+# AI_FOLLOWUP=1 (Claude CLI only): keep one Claude Code session for follow-up questions, deleted at exit.
+SID='' TURN=0
+if [[ ${AI_FOLLOWUP:-0} == 1 && $PROVIDER == claude && $BACKEND != api ]] && (( TTY )) && find_bin claude >/dev/null; then
+  SID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+fi
+cleanup() { spin_off; rm -f "$ERR" "$CODE"; [[ -n $SID ]] && rm -f "$HOME"/.claude/projects/*/"$SID".jsonl; }
+trap cleanup EXIT
 trap 'exit 130' INT TERM
 cd "$HOME" 2>/dev/null || true   # neutral dir: no project config/hooks get loaded
 
@@ -163,9 +169,10 @@ stream_text() {
     END { print "\n" if $n; exit($n ? 0 : 3) }'
 }
 claude_cli() {
-  local bin=$1 rc model=${AI_CLAUDE_MODEL:-sonnet}
+  local bin=$1 rc model=${AI_CLAUDE_MODEL:-sonnet} sess=(--no-session-persistence)
+  if [[ -n $SID ]]; then if (( TURN )); then sess=(--resume "$SID"); else sess=(--session-id "$SID"); fi; fi
   printf '%s' "$q" | env -u ANTHROPIC_API_KEY "$bin" -p --verbose --output-format stream-json --include-partial-messages \
-      --tools "" --strict-mcp-config --no-session-persistence \
+      --tools "" --strict-mcp-config "${sess[@]}" \
       --model "$model" ${AI_CLAUDE_EFFORT:+--effort "$AI_CLAUDE_EFFORT"} \
       --append-system-prompt "$SYS" 2>"$ERR" | stream_text "$(hdr "$model" 2>&1)"
   rc=("${PIPESTATUS[@]}")
@@ -235,6 +242,7 @@ offer_copy() {  # AI_COPY=1: Enter copies the answer's first code block to the c
 }
 
 # ---------- dispatch ----------
+while :; do
 spin_on
 { case $PROVIDER in
   claude)
@@ -249,3 +257,8 @@ spin_on
     else fail "Codex isn't installed." "" "brew install --cask codex   (or rerun the installer)"; fi ;;
 esac; } | render || exit $?
 [[ -n $CODE ]] && offer_copy
+[[ -n $SID ]] || break
+read -r -p "${ACC}›${R} Follow-up ${D}(Enter to quit)${R}: " q </dev/tty || break
+[[ -z ${q//[[:space:]]/} ]] && break
+TURN=$((TURN + 1))
+done
