@@ -90,15 +90,20 @@ get_key() {  # $1 env var, $2 keychain service
   else security find-generic-password -a "$USER" -s "$2" -w 2>/dev/null; fi
 }
 
-# Render markdown for the terminal: drop ``` fences, color code, bold **text**/headings.
+# Render markdown for the terminal: fences → colored code, headings/**bold**/*italic*,
+# bullets, links, rules. UTF-8 in and out (-CS), so widths are in characters.
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  perl -pe 'BEGIN { $| = 1 }
+  COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -pe 'BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80 }
     if (/^\s*```/) { $c = !$c; $_ = ""; next }
     if ($c) { s/^(.*)$/  \e[36m$1\e[0m/; next }
     s/^#+\s+(.*)$/\e[1m$1\e[0m/;
+    s/^(\s*)[-*+]\s+/$1\x{2022} /;
+    s/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/"\e[2m" . ("\x{2500}" x ($w - 2)) . "\e[0m\n"/e;
+    s/\[([^]\n]+)\]\((https?:[^)\s]+)\)/$1 \e[2m$2\e[0m/g;
     s/`([^`\n]+)`/\e[36m$1\e[0m/g;
-    s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;'
+    s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;
+    s/(?<![\w*])[*_](?=\S)([^*_\e\n]+?)(?<=\S)[*_](?![\w*])/\e[3m$1\e[0m/g;'
 }
 
 ERR=$(mktemp -t ai.XXXXXX)
