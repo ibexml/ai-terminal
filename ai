@@ -90,13 +90,25 @@ get_key() {  # $1 env var, $2 keychain service
   else security find-generic-password -a "$USER" -s "$2" -w 2>/dev/null; fi
 }
 
-# Render markdown for the terminal: fences → colored code, headings/**bold**/*italic*,
-# bullets, links, rules. UTF-8 in and out (-CS), so widths are in characters.
+# Render markdown for the terminal: fences → colored code (syntax-highlighted by bat when
+# installed), headings/**bold**/*italic*, bullets, links, rules. UTF-8 in and out (-CS).
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -pe 'BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80 }
-    if (/^\s*```/) { $c = !$c; $_ = ""; next }
-    if ($c) { s/^(.*)$/  \e[36m$1\e[0m/; next }
+  AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -pe '
+    BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT} }
+    sub cyan { $_[0] =~ s/^(.*)$/  \e[36m$1\e[0m/mgr }
+    sub hl {  # bat colors the block, or plain cyan when it cannot (unknown language)
+      my ($code, $lang) = @_;
+      my $pid = open2(my $out, my $in, "sh", "-c", q{exec "$0" "$@" 2>/dev/null}, $bat, "-l", $lang, "--style=plain", "--color=always", "--paging=never");
+      binmode $in, ":utf8"; binmode $out, ":utf8";
+      print $in $code; close $in; local $/; my $h = <$out>; waitpid $pid, 0;   # shortcut: block written before reading, fine below the pipe buffer (64 KB)
+      ($? == 0 && length $h) ? $h =~ s/^/  /mgr : cyan($code);
+    }
+    if (/^\s*```\s*(\S*)/) {
+      if ($c = !$c) { $lang = $1; $code = "" } elsif (length $code) { print hl($code, $lang); $code = "" }
+      $_ = ""; next;
+    }
+    if ($c) { if ($bat && $lang) { $code .= $_; $_ = "" } else { $_ = cyan($_) } next }
     s/^#+\s+(.*)$/\e[1m$1\e[0m/;
     s/^(\s*)[-*+]\s+/$1\x{2022} /;
     s/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/"\e[2m" . ("\x{2500}" x ($w - 2)) . "\e[0m\n"/e;
