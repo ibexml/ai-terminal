@@ -100,7 +100,7 @@ get_key() {  # $1 env var, $2 keychain service
 # footer on stderr and, after 10 s, a terminal notification (OSC 9). UTF-8 in and out (-CS).
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
+  AI_CODE=$CODE AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
     BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT}; $t0 = time }
     END { if ($ENV{AI_FOOT} && $.) { my $t = time - $t0; printf STDERR "\e[2m%.1fs\e[0m\n", $t; print STDERR "\e]9;$ENV{AI_NAME} answered\a" if $t > 10 } }
     sub cyan { $_[0] =~ s/^(.*)$/  \e[36m$1\e[0m/mgr }
@@ -120,10 +120,15 @@ render() {
       push @o, join " ", @cur; join "\n", @o;
     }
     if (/^\s*```\s*(\S*)/) {
-      if ($c = !$c) { $lang = $1; $code = "" } elsif (length $code) { print hl($code, $lang); $code = "" }
+      if ($c = !$c) { $lang = $1; $code = "" }
+      elsif (length $code) {
+        print hl($code, $lang) if $bat && $lang;
+        if ($ENV{AI_CODE} && !$saved++) { open my $f, ">:utf8", $ENV{AI_CODE}; print $f $code }   # first block, for AI_COPY
+        $code = "";
+      }
       $_ = ""; next;
     }
-    if ($c) { if ($bat && $lang) { $code .= $_; $_ = "" } else { $_ = cyan($_) } next }
+    if ($c) { $code .= $_; if ($bat && $lang) { $_ = "" } else { $_ = cyan($_) } next }
     s/^#+\s+(.*)$/\e[1m$1\e[0m/;
     s/^(\s*)[-*+]\s+/$1\x{2022} /;
     s/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/"\e[2m" . ("\x{2500}" x ($w - 2)) . "\e[0m\n"/e;
@@ -136,7 +141,8 @@ render() {
 }
 
 ERR=$(mktemp -t ai.XXXXXX)
-trap 'spin_off; rm -f "$ERR"' EXIT
+CODE=''; [[ ${AI_COPY:-0} == 1 ]] && (( TTY )) && CODE=$(mktemp -t ai.XXXXXX)   # the answer's first code block
+trap 'spin_off; rm -f "$ERR" "$CODE"' EXIT
 trap 'exit 130' INT TERM
 cd "$HOME" 2>/dev/null || true   # neutral dir: no project config/hooks get loaded
 
@@ -220,6 +226,14 @@ openai_api() {
   api_reply "$resp" '.choices[0].message.content' "$model"
 }
 
+offer_copy() {  # AI_COPY=1: Enter copies the answer's first code block to the clipboard
+  local k; [[ -s $CODE ]] || return 0
+  read -r -s -n1 -p "${D}↵ copy the first code block · any other key to skip${R}" k </dev/tty || k=skip
+  printf '\r\033[K' >&2
+  [[ -z $k ]] && pbcopy <"$CODE" && printf '%s✓ copied%s\n' "$D" "$R" >&2
+  : >"$CODE"
+}
+
 # ---------- dispatch ----------
 spin_on
 { case $PROVIDER in
@@ -233,4 +247,5 @@ spin_on
     elif [[ $BACKEND != cli ]] && key=$(get_key OPENAI_API_KEY ai-zsh-openai) && [[ -n $key ]]; then openai_api "$key"
     elif [[ $BACKEND == api ]]; then fail "No OpenAI API key found." "" "set OPENAI_API_KEY, or rerun the installer to save one"
     else fail "Codex isn't installed." "" "brew install --cask codex   (or rerun the installer)"; fi ;;
-esac; } | render
+esac; } | render || exit $?
+[[ -n $CODE ]] && offer_copy
