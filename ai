@@ -56,6 +56,15 @@ fail() {  # fail "what went wrong" [errfile] [how to fix]
   [[ -s ${2:-} ]] && { printf '%s' "$D"; tail -n 5 "$2" | sed 's/^/  /'; printf '%s' "$R"; } >&2
   exit 1
 }
+offer_login() {  # offer_login "Claude Code" cmd...  — ask on the tty, run the sign-in there; true if the user said yes
+  local a
+  (( TTY )) && [[ -r /dev/tty && -w /dev/tty ]] || return 1
+  spin_off
+  read -r -p "${RED}✗${R} $1 isn't signed in. Sign in now? ${D}[Y/n]${R} " a </dev/tty || return 1
+  case $a in [nN]*) return 1 ;; esac
+  "${@:2}" </dev/tty >/dev/tty 2>&1 || true   # its URL and prompts go to the tty, not into the render pipe
+  spin_on
+}
 
 case $PROVIDER in claude|chatgpt) ;; *) fail "Unknown AI '$PROVIDER'." "" "use AI_PROVIDER=claude or chatgpt" ;; esac
 case $BACKEND in auto|cli|api) ;; *) fail "Unknown AI_BACKEND '$BACKEND'." "" "use auto, cli or api" ;; esac
@@ -108,6 +117,7 @@ claude_cli() {
           --append-system-prompt "$SYS" 2>"$ERR") \
     || { [[ -n $out ]] && printf '%s\n' "$out" >>"$ERR"
          if grep -qiE 'authenticat|log ?in|oauth|expired' "$ERR"; then
+           [[ -z ${2:-} ]] && offer_login "Claude Code" env -u ANTHROPIC_API_KEY "$bin" auth login && { claude_cli "$bin" retried; return; }
            fail "Claude Code isn't signed in." "$ERR" "$bin auth login"
          else fail "Claude Code couldn't answer." "$ERR"; fi; }
   [[ -n $out ]] || fail "Claude Code sent an empty reply." "$ERR"
@@ -121,7 +131,9 @@ codex_cli() {
           -- "$SYS Do not run commands or read files unless the question needs it.
 
 Question: $q" </dev/null 2>"$ERR") \
-    || { [[ -n $out ]] && printf '%s\n' "$out" >>"$ERR"; fail "Codex couldn't answer (not signed in?)." "$ERR" "$bin login"; }
+    || { [[ -n $out ]] && printf '%s\n' "$out" >>"$ERR"
+         [[ -z ${2:-} && ! -f $HOME/.codex/auth.json ]] && offer_login Codex env -u OPENAI_API_KEY "$bin" login && { codex_cli "$bin" retried; return; }
+         fail "Codex couldn't answer (not signed in?)." "$ERR" "$bin login"; }
   [[ -n $out ]] || fail "Codex sent an empty reply." "$ERR"
   spin_off
   printf '%s\n' "$out"

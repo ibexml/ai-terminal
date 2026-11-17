@@ -79,8 +79,7 @@ It leaves these in place: Claude Code, Codex and `jq`; the Ghostty/kitty lines (
 - **⌘I does nothing or types a character**: restart the terminal app and open a new tab. To check the binding, run `bindkey '\ei'` (zsh) or `bind -s | grep ei` (bash). In other terminals, map ⌘I to send Esc+i (`\x1bi`).
 - **iTerm2 mapping didn't stick**: quit iTerm2 completely and rerun the installer, or add it by hand under Settings → Keys → Key Bindings: ⌘I → Send Escape Sequence `i`.
 - **`ai: command not found`**: open a new tab. `~/.local/bin` must be on `PATH` (`~/.ai-keys.sh` adds it).
-- **"Claude Code isn't signed in"**: run `claude auth login`.
-- **"Codex couldn't answer (not signed in?)"**: run `codex login`.
+- **"Claude Code isn't signed in" / "Codex couldn't answer (not signed in?)"**: `ai` offers to sign you in when run from a terminal; otherwise run `claude auth login` or `codex login`.
 - **"Claude Code isn't installed" / "Codex isn't installed"**: rerun the installer, or add an API key and use `AI_BACKEND=auto` or `api`.
 - **"API mode needs jq"**: `brew install jq`.
 - **API key problems**: check that the Keychain item exists with `security find-generic-password -a "$USER" -s ai-zsh-anthropic` (or `ai-zsh-openai`). macOS may ask you to allow `security` to read it.
