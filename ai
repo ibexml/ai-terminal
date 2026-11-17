@@ -91,7 +91,8 @@ get_key() {  # $1 env var, $2 keychain service
 }
 
 # Render markdown for the terminal: fences → colored code (syntax-highlighted by bat when
-# installed), headings/**bold**/*italic*, bullets, links, rules. UTF-8 in and out (-CS).
+# installed), headings/**bold**/*italic*, bullets, links, rules; prose wrapped to the terminal
+# width on word boundaries, code never. UTF-8 in and out (-CS), so widths are in characters.
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
   AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -pe '
@@ -104,6 +105,14 @@ render() {
       print $in $code; close $in; local $/; my $h = <$out>; waitpid $pid, 0;   # shortcut: block written before reading, fine below the pipe buffer (64 KB)
       ($? == 0 && length $h) ? $h =~ s/^/  /mgr : cyan($code);
     }
+    sub vis { my $s = shift; $s =~ s/\e\[[\d;]*m//g; length $s }   # visible width, escapes dropped
+    sub wrap {  # wrap at $w on spaces; continuation lines get the bullet/number indent
+      my ($s, $ind) = @_; my (@o, @cur);
+      for my $wd (split / /, $s, -1) {
+        if (@cur && vis(join " ", @cur, $wd) >= $w) { push @o, join " ", @cur; @cur = ($ind . $wd) } else { push @cur, $wd }
+      }
+      push @o, join " ", @cur; join "\n", @o;
+    }
     if (/^\s*```\s*(\S*)/) {
       if ($c = !$c) { $lang = $1; $code = "" } elsif (length $code) { print hl($code, $lang); $code = "" }
       $_ = ""; next;
@@ -115,7 +124,8 @@ render() {
     s/\[([^]\n]+)\]\((https?:[^)\s]+)\)/$1 \e[2m$2\e[0m/g;
     s/`([^`\n]+)`/\e[36m$1\e[0m/g;
     s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;
-    s/(?<![\w*])[*_](?=\S)([^*_\e\n]+?)(?<=\S)[*_](?![\w*])/\e[3m$1\e[0m/g;'
+    s/(?<![\w*])[*_](?=\S)([^*_\e\n]+?)(?<=\S)[*_](?![\w*])/\e[3m$1\e[0m/g;
+    if (/\S/ && !/\x{2500}/) { chomp; my ($ind) = /^(\s*(?:\x{2022} |\d+[.)] )?)/; $_ = wrap($_, " " x length $ind) . "\n" }'
 }
 
 ERR=$(mktemp -t ai.XXXXXX)
