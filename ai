@@ -83,7 +83,7 @@ if [[ -z ${q//[[:space:]]/} ]]; then
 fi
 [[ -z ${q//[[:space:]]/} ]] && exit 0
 
-SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put any shell commands on their own lines."
+SYS="You are answering a quick question typed in a macOS terminal. Lead with the answer, then add only what helps. Be concise, in plain text (no markdown headings). Put shell commands in a fenced \`\`\`bash block."
 
 find_bin() {
   local c
@@ -97,15 +97,17 @@ get_key() {  # $1 env var, $2 keychain service
   else security find-generic-password -a "$USER" -s "$2" -w 2>/dev/null; fi
 }
 
-# Render markdown for the terminal: fences → colored code (syntax-highlighted by bat when
-# installed), headings/**bold**/*italic*, bullets, links, rules; prose wrapped to the terminal
-# width on word boundaries, code never; URLs clickable (OSC 8). Ends with a dim elapsed-time
-# footer on stderr and, after 10 s, a terminal notification (OSC 9). UTF-8 in and out (-CS).
+# Render markdown for the terminal, as it streams: each line shows raw as it arrives, then is
+# redrawn formatted at its newline. Fences → colored code (bat highlights when installed),
+# headings/**bold**/*italic*, bullets, links, rules, clickable URLs (OSC 8); prose wrapped to the
+# terminal width on word boundaries (never code). Ends with a dim elapsed-time footer on stderr
+# and, after 10 s, a terminal notification (OSC 9).
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  AI_CODE_C=$CODE_C AI_CODE=$CODE AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
-    BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT}; $cc = $ENV{AI_CODE_C} || 36; $t0 = time }
-    END { if ($ENV{AI_FOOT} && $.) { my $t = time - $t0; printf STDERR "\e[2m%.1fs\e[0m\n", $t; print STDERR "\e]9;$ENV{AI_NAME} answered\a" if $t > 10 } }
+  AI_CODE_C=$CODE_C AI_CODE=$CODE AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -MIPC::Open2 -MTime::HiRes=time -MEncode -e '
+    $| = 1; binmode STDOUT, ":utf8";
+    my $w = $ENV{COLUMNS} || 80; my $bat = $ENV{AI_BAT}; my $cc = $ENV{AI_CODE_C} || 36; my $t0 = time;
+    my ($c, $lang, $code, $saved, $lines);
     sub cyan { $_[0] =~ s/^(.*)$/  \e[${cc}m$1\e[0m/mgr }
     sub hl {  # bat colors the block, or plain cyan when it cannot (unknown language)
       my ($code, $lang) = @_;
@@ -122,25 +124,40 @@ render() {
       }
       push @o, join " ", @cur; join "\n", @o;
     }
-    if (/^\s*```\s*(\S*)/) {
-      if ($c = !$c) { $lang = $1; $code = "" }
-      elsif (length $code) {
-        print hl($code, $lang) if $bat && $lang;
-        if ($ENV{AI_CODE} && !$saved++) { open my $f, ">:utf8", $ENV{AI_CODE}; print $f $code }   # first block, for AI_COPY
-        $code = "";
+    sub line {  # one complete markdown line → terminal text
+      local $_ = shift; $lines++;
+      if (/^\s*```\s*(\S*)/) {
+        if ($c = !$c) { $lang = $1; $code = "" }
+        elsif (length $code) {
+          print hl($code, $lang) if $bat && $lang;
+          if ($ENV{AI_CODE} && !$saved++) { open my $f, ">:utf8", $ENV{AI_CODE}; print $f $code }   # first block, for AI_COPY
+          $code = "";
+        }
+        return "";
       }
-      $_ = ""; next;
+      if ($c) { $code .= $_; return ($bat && $lang) ? "" : cyan($_) }
+      s/^#+\s+(.*)$/\e[1m$1\e[0m/;
+      s/^(\s*)[-*+]\s+/$1\x{2022} /;
+      s/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/"\e[2m" . ("\x{2500}" x ($w - 2)) . "\e[0m\n"/e;
+      s/\[([^]\n]+)\]\((https?:[^)\s]+)\)/$1 \e[2m$2\e[0m/g;
+      s{(https?://[^\s)>\]\e]*[^\s)>\]\e.,;:!?])}{\e]8;;$1\e\\$1\e]8;;\e\\}g;
+      s/`([^`\n]+)`/\e[${cc}m$1\e[0m/g;
+      s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;
+      s/(?<![\w*])[*_](?=\S)([^*_\e\n]+?)(?<=\S)[*_](?![\w*])/\e[3m$1\e[0m/g;
+      # wrap prose, but never a line with inline code: a command must survive copy and paste
+      if (/\S/ && !/\x{2500}/ && !/\e\[${cc}m/) { chomp; my ($ind) = /^(\s*(?:\x{2022} |\d+[.)] )?)/; $_ = wrap($_, " " x length $ind) . "\n" }
+      $_;
     }
-    if ($c) { $code .= $_; if ($bat && $lang) { $_ = "" } else { $_ = cyan($_) } next }
-    s/^#+\s+(.*)$/\e[1m$1\e[0m/;
-    s/^(\s*)[-*+]\s+/$1\x{2022} /;
-    s/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/"\e[2m" . ("\x{2500}" x ($w - 2)) . "\e[0m\n"/e;
-    s/\[([^]\n]+)\]\((https?:[^)\s]+)\)/$1 \e[2m$2\e[0m/g;
-    s{(https?://[^\s)>\]\e]*[^\s)>\]\e.,;:!?])}{\e]8;;$1\e\\$1\e]8;;\e\\}g;
-    s/`([^`\n]+)`/\e[${cc}m$1\e[0m/g;
-    s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;
-    s/(?<![\w*])[*_](?=\S)([^*_\e\n]+?)(?<=\S)[*_](?![\w*])/\e[3m$1\e[0m/g;
-    if (/\S/ && !/\x{2500}/) { chomp; my ($ind) = /^(\s*(?:\x{2022} |\d+[.)] )?)/; $_ = wrap($_, " " x length $ind) . "\n" }'
+    my ($buf, $line, $shown) = ("", "", 0);   # $shown: characters of the current line already on screen, raw
+    sub redraw { return unless $shown; my $rows = int(($shown - 1) / $w); print "\e[${rows}A" if $rows; print "\r\e[J"; $shown = 0 }
+    while (sysread STDIN, my $chunk, 4096) {
+      $buf .= $chunk;
+      $line .= decode("UTF-8", $buf, Encode::FB_QUIET);   # an incomplete trailing character waits in $buf
+      while ($line =~ s/^(.*\n)//) { redraw(); print line($1) }
+      if (length $line > $shown && !($c && $bat && $lang) && $line !~ /^\s*`/) { print substr($line, $shown); $shown = length $line }
+    }
+    if (length $line) { redraw(); print line("$line\n") }
+    if ($ENV{AI_FOOT} && $lines) { my $t = time - $t0; printf STDERR "\e[2m%.1fs\e[0m\n", $t; print STDERR "\e]9;$ENV{AI_NAME} answered\a" if $t > 10 }'
 }
 
 ERR=$(mktemp -t ai.XXXXXX)
@@ -161,25 +178,29 @@ cd "$HOME" 2>/dev/null || true   # neutral dir: no project config/hooks get load
 stream_text() {
   SPIN=$SPIN AI_TTY=$TTY AI_ERR=$ERR AI_HEAD=$1 AI_CLR=$CLR perl -MJSON::PP -ne '
     BEGIN { $| = 1; binmode STDOUT, ":utf8" }
+    sub start { return if $n++ || !$ENV{AI_TTY}; kill TERM => $ENV{SPIN} if $ENV{SPIN}; print STDERR $ENV{AI_CLR}, $ENV{AI_HEAD} ? "$ENV{AI_HEAD}\n" : "" }
     my $j = eval { decode_json($_) } or next;
     if ($j->{type} eq "stream_event") {
       my $d = $j->{event}{delta} or next; next unless ($d->{type} // "") eq "text_delta";
-      if (!$n++ && $ENV{AI_TTY}) { kill TERM => $ENV{SPIN} if $ENV{SPIN}; print STDERR $ENV{AI_CLR}, $ENV{AI_HEAD} ? "$ENV{AI_HEAD}\n" : "" }
-      print $d->{text};
-    } elsif ($j->{type} eq "result" && $j->{is_error}) {
-      open my $e, ">>", $ENV{AI_ERR}; print $e "$j->{result}\n";
+      start(); print $d->{text};
+    } elsif ($j->{type} eq "result") {
+      if ($j->{is_error}) { open my $e, ">>", $ENV{AI_ERR}; print $e "$j->{result}\n" }
+      elsif (!$n && length($j->{result} // "")) { start(); print $j->{result} }   # no deltas came: print the whole answer
     }
     END { print "\n" if $n; exit($n ? 0 : 3) }'
 }
 claude_cli() {
   local bin=$1 rc model=${AI_CLAUDE_MODEL:-sonnet} sess=(--no-session-persistence)
-  if [[ -n $SID ]]; then if (( TURN )); then sess=(--resume "$SID"); else sess=(--session-id "$SID"); fi; fi
+  if [[ -n $SID ]]; then if (( TURN )) || [[ -n ${2:-} ]]; then sess=(--resume "$SID"); else sess=(--session-id "$SID"); fi; fi
   printf '%s' "$q" | env -u ANTHROPIC_API_KEY "$bin" -p --verbose --output-format stream-json --include-partial-messages \
       --tools "" --strict-mcp-config "${sess[@]}" \
       --model "$model" ${AI_CLAUDE_EFFORT:+--effort "$AI_CLAUDE_EFFORT"} \
       --append-system-prompt "$SYS" 2>"$ERR" | stream_text "$(hdr "$model" 2>&1)"
   rc=("${PIPESTATUS[@]}")
-  (( rc[2] == 3 )) || return 0   # the answer was printed
+  if (( rc[2] != 3 )); then   # the answer was printed; mention it if Claude Code still died
+    (( rc[1] )) && [[ -s $ERR ]] && { printf '%s' "$D"; tail -n 3 "$ERR" | sed 's/^/  /'; printf '%s' "$R"; } >&2
+    return 0
+  fi
   if grep -qiE 'authenticat|log ?in|oauth|expired' "$ERR"; then
     [[ -z ${2:-} ]] && offer_login "Claude Code" env -u ANTHROPIC_API_KEY "$bin" auth login && { claude_cli "$bin" retried; return; }
     fail "Claude Code isn't signed in." "$ERR" "$bin auth login"
