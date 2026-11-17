@@ -30,12 +30,13 @@ if (( TTY )) && [[ -z ${NO_COLOR:-} ]]; then
   case $PROVIDER in chatgpt) ACC=$'\033[38;5;42m' ;; *) ACC=$'\033[38;5;173m' ;; esac
 fi
 case $PROVIDER in claude) NAME=Claude ;; chatgpt) NAME=ChatGPT ;; *) NAME=$PROVIDER ;; esac
+CLR=$'\r\033[K\033[?25h'; (( ANIM )) && CLR+=$'\033]0;\007'   # clear the spinner line, show the cursor, reset the tab title
 
 SPIN=''
 spin_on() {  # animated "thinking" line with elapsed time
   (( TTY )) || return 0
   if (( ! ANIM )); then printf '%s%s is thinking…%s' "$D" "$NAME" "$R" >&2; return 0; fi
-  printf '\033[?25l' >&2
+  printf '\033[?25l\033]0;ai: %s is thinking…\007' "$NAME" >&2
   ( F=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0 start=$SECONDS
     while kill -0 $$ 2>/dev/null; do   # stops by itself if ai is killed
       t=$((SECONDS - start)) s=''; (( t >= 2 )) && s=" ${t}s"
@@ -47,7 +48,7 @@ spin_on() {  # animated "thinking" line with elapsed time
 spin_off() {
   (( TTY )) || return 0
   [[ -n $SPIN ]] && kill "$SPIN" 2>/dev/null; SPIN=''
-  printf '\r\033[K\033[?25h' >&2
+  printf '%s' "$CLR" >&2
 }
 hdr() {  # hdr "model" — dim "Claude · sonnet" line where the spinner was (stderr)
   (( ANIM )) && printf '%s%s · %s%s\n' "$D" "$NAME" "$1" "$R" >&2
@@ -95,13 +96,13 @@ get_key() {  # $1 env var, $2 keychain service
 
 # Render markdown for the terminal: fences → colored code (syntax-highlighted by bat when
 # installed), headings/**bold**/*italic*, bullets, links, rules; prose wrapped to the terminal
-# width on word boundaries, code never. Ends with a dim elapsed-time footer on stderr.
-# UTF-8 in and out (-CS), so widths are in characters.
+# width on word boundaries, code never; URLs clickable (OSC 8). Ends with a dim elapsed-time
+# footer on stderr and, after 10 s, a terminal notification (OSC 9). UTF-8 in and out (-CS).
 render() {
   if [[ ! -t 1 || -n ${NO_COLOR:-} ]]; then cat; return; fi
-  AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
+  AI_NAME=$NAME AI_FOOT=$ANIM AI_BAT=$(command -v bat 2>/dev/null) COLUMNS=$(tput cols 2>/dev/null || echo 80) perl -CS -MIPC::Open2 -MTime::HiRes=time -pe '
     BEGIN { $| = 1; $w = $ENV{COLUMNS} || 80; $bat = $ENV{AI_BAT}; $t0 = time }
-    END { printf STDERR "\e[2m%.1fs\e[0m\n", time - $t0 if $ENV{AI_FOOT} && $. }
+    END { if ($ENV{AI_FOOT} && $.) { my $t = time - $t0; printf STDERR "\e[2m%.1fs\e[0m\n", $t; print STDERR "\e]9;$ENV{AI_NAME} answered\a" if $t > 10 } }
     sub cyan { $_[0] =~ s/^(.*)$/  \e[36m$1\e[0m/mgr }
     sub hl {  # bat colors the block, or plain cyan when it cannot (unknown language)
       my ($code, $lang) = @_;
@@ -110,7 +111,7 @@ render() {
       print $in $code; close $in; local $/; my $h = <$out>; waitpid $pid, 0;   # shortcut: block written before reading, fine below the pipe buffer (64 KB)
       ($? == 0 && length $h) ? $h =~ s/^/  /mgr : cyan($code);
     }
-    sub vis { my $s = shift; $s =~ s/\e\[[\d;]*m//g; length $s }   # visible width, escapes dropped
+    sub vis { my $s = shift; $s =~ s/\e\[[\d;]*m|\e\]8;;[^\e]*\e\\//g; length $s }   # visible width, escapes dropped
     sub wrap {  # wrap at $w on spaces; continuation lines get the bullet/number indent
       my ($s, $ind) = @_; my (@o, @cur);
       for my $wd (split / /, $s, -1) {
@@ -127,6 +128,7 @@ render() {
     s/^(\s*)[-*+]\s+/$1\x{2022} /;
     s/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/"\e[2m" . ("\x{2500}" x ($w - 2)) . "\e[0m\n"/e;
     s/\[([^]\n]+)\]\((https?:[^)\s]+)\)/$1 \e[2m$2\e[0m/g;
+    s{(https?://[^\s)>\]\e]*[^\s)>\]\e.,;:!?])}{\e]8;;$1\e\\$1\e]8;;\e\\}g;
     s/`([^`\n]+)`/\e[36m$1\e[0m/g;
     s/\*\*([^*\n]+)\*\*/\e[1m$1\e[0m/g;
     s/(?<![\w*])[*_](?=\S)([^*_\e\n]+?)(?<=\S)[*_](?![\w*])/\e[3m$1\e[0m/g;
@@ -142,12 +144,12 @@ cd "$HOME" 2>/dev/null || true   # neutral dir: no project config/hooks get load
 # stream_text "header": print the text of a stream-json answer as it arrives; the spinner
 # stops at the first word. Exits 3 when nothing was printed, with any error text appended to $ERR.
 stream_text() {
-  SPIN=$SPIN AI_TTY=$TTY AI_ERR=$ERR AI_HEAD=$1 perl -MJSON::PP -ne '
+  SPIN=$SPIN AI_TTY=$TTY AI_ERR=$ERR AI_HEAD=$1 AI_CLR=$CLR perl -MJSON::PP -ne '
     BEGIN { $| = 1; binmode STDOUT, ":utf8" }
     my $j = eval { decode_json($_) } or next;
     if ($j->{type} eq "stream_event") {
       my $d = $j->{event}{delta} or next; next unless ($d->{type} // "") eq "text_delta";
-      if (!$n++ && $ENV{AI_TTY}) { kill TERM => $ENV{SPIN} if $ENV{SPIN}; print STDERR "\r\e[K\e[?25h", $ENV{AI_HEAD} ? "$ENV{AI_HEAD}\n" : "" }
+      if (!$n++ && $ENV{AI_TTY}) { kill TERM => $ENV{SPIN} if $ENV{SPIN}; print STDERR $ENV{AI_CLR}, $ENV{AI_HEAD} ? "$ENV{AI_HEAD}\n" : "" }
       print $d->{text};
     } elsif ($j->{type} eq "result" && $j->{is_error}) {
       open my $e, ">>", $ENV{AI_ERR}; print $e "$j->{result}\n";
